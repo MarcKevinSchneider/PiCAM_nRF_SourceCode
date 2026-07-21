@@ -12,12 +12,17 @@
 
 #include <Arduino.h>
 #include <Metro.h>
+#include <Wire.h>
+#include <RTClib.h>
 #include "bluetooth.h"
 #include "gps.h"
-#include "xiao_pins.h"   // Pi_Enable_Pin, GPS_Enable_Pin, PIN_WIRE_SDA/SCL, BATT_SENSE_PIN -- see this file for XIAO rewiring notes
+#include "xiao_pins.h"   // Pi_Enable_Pin, GPS_Enable_Pin, RTC_INT_PIN, BATT_SENSE_PIN -- see this file for XIAO rewiring notes
+
+// DS3231M RTC object -- communicates over I2C (D4=SDA, D5=SCL)
+RTC_DS3231 rtc;
 
 uint16_t ID=0;
-uint16_t IMAGE_INTERVAL  = 30;        //mins - MUST BE A MULTIPLE OF CLK_RESOLUTION
+uint16_t IMAGE_INTERVAL  = 1;        //mins - MUST BE A MULTIPLE OF CLK_RESOLUTION
 uint8_t  BLE_INTERVAL    = 1;         //mins - MUST BE A MULTIPLE OF CLK_RESOLUTION
 uint16_t GPS_INTERVAL    = 24;        //hours - MUST BE A MULTIPLE OF CLK_RESOLUTION
 uint32_t CLK_SYNC_INT    = 60000;     //ms - GPS clock sync interval (minimum time before accepting an update)    
@@ -28,7 +33,8 @@ uint16_t PI_SAVE_TIMEOUT = 30*1000;   //ms
 uint32_t GPS_TIMEOUT     = 2*60*1000; //ms
 
 float MAX_BATT_VOLTAGE   = 5.2f;      //used to scale batt level
-float LOW_BATT_CUTOFF    = 3.4f;      //volts
+float LOW_BATT_CUTOFF    = 0.0f;      //set to 0 for testing
+// float LOW_BATT_CUTOFF    = 3.4f;
 
 // Offset hours from gps time (UTC)
 int8_t TZ_OFFSET         = +2;  // Berlin Time Zone
@@ -89,6 +95,25 @@ void setup()
   delay(2000); //Give everything a chance to reset
 
   Serial1.begin(230400);
+
+  // --- DS3231M RTC initialisation ---
+  Wire.begin();
+  if (!rtc.begin()) {
+    // RTC not found on I2C -- BLE warning, then continue without it
+    // Time functions will return 0 until set manually via the 't' BLE command
+    writeBLE("WARNING: RTC not found on I2C. Check wiring (D4=SDA, D5=SCL).");
+  } else {
+    if (rtc.lostPower()) {
+      // RTC lost its backup battery or was never set -- set to compile time as fallback
+      rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+      writeBLE("WARNING: RTC lost power -- time reset to compile time. Update via BLE 't' command.");
+    }
+    // Sync the Arduino Time library from the RTC so hour()/minute()/second()
+    // return correct real-world time throughout the firmware
+    DateTime now = rtc.now();
+    setTime(now.hour(), now.minute(), now.second(),
+            now.day(),  now.month(),  now.year());
+  }
 
   //Set batt voltage
   updateBatt(calcBattPerc(battV));
@@ -206,13 +231,18 @@ void getBLECmd(char cmd) {
       break;
     }
     case 't': {
-      uint8_t yr = bleuart.parseInt();
-      uint8_t mth = bleuart.parseInt();
-      uint8_t dy = bleuart.parseInt();
-      uint8_t h = bleuart.parseInt();
-      uint8_t m = bleuart.parseInt();
-      uint8_t s = bleuart.parseInt();
-      setTime(h,m,s,dy,mth,yr);
+      // Expected format sent from phone: t2026,07,01,14,32,05
+      // (year, month, day, hour, minute, second -- comma separated)
+      int yr  = bleuart.parseInt();
+      int mth = bleuart.parseInt();
+      int dy  = bleuart.parseInt();
+      int h   = bleuart.parseInt();
+      int m   = bleuart.parseInt();
+      int s   = bleuart.parseInt();
+      // Update the Arduino Time library (used for scheduling)
+      setTime(h, m, s, dy, mth, yr);
+      // Also write to the DS3231M so time persists across power cycles
+      rtc.adjust(DateTime(yr, mth, dy, h, m, s));
       sprintf(buf, "Time set: %04d-%02d-%02d %02d:%02d:%02d\n", year(), month(), day(), hour(), minute(), second());
       writeBLE(buf);
       break;
@@ -643,7 +673,12 @@ float calcBattPerc(float v) {
 }
 
 float getTemp() {
-  return 0.0;
+  // DS3231M has an onboard temperature sensor accurate to +/-3 degrees C
+  // used here as a proxy for ambient temperature inside the enclosure
+  if (rtc.begin()) {
+    return rtc.getTemperature();
+  }
+  return 0.0;  // fallback if RTC not available
 }
 
 void blinkLED(int count) {

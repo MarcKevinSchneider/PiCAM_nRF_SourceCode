@@ -5,14 +5,22 @@
  *   D0, D1, D2, D3, D8, D9, D10
  */
 
-
 #ifndef XIAO_PINS_H
 #define XIAO_PINS_H
 
 #define Pi_Enable_Pin   D0   // P0.02 -- drives Pi power MOSFET/load switch
 #define GPS_Enable_Pin  D1   // P0.03 -- unused (no GPS), kept for compile compat
 
-// PIN_WIRE_SDA = 4 (D4), PIN_WIRE_SCL = 5 (D5) per variant.h
+// I2C pins -- D4 (SDA) and D5 (SCL) used by DS3231M RTC over Wire
+// PIN_WIRE_SDA = 4 (D4), PIN_WIRE_SCL = 5 (D5) per variant.h -- no redefinition needed
+
+/*
+ * DS3231M RTC -- connected over I2C (D4/D5), no extra pin needed for basic use.
+ * SQW alarm interrupt pin (optional, for deep-sleep wake):
+ *   Wire DS3231M SQW -> D3
+ *   Pull LOW by RTC when alarm fires -> can be used to trigger wake from deep sleep
+ */
+#define RTC_INT_PIN     D3   // SQW output from DS3231M -- optional alarm interrupt
 
 /*
  * Battery voltage sensing -- confirmed from Seeed schematic + wiki:
